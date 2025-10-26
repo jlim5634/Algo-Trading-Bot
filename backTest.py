@@ -1,4 +1,6 @@
 import csv
+import os
+from dotenv import load_dotenv
 from datetime import datetime
 import numpy as np
 from lumibot.brokers import Alpaca
@@ -8,8 +10,10 @@ from lumibot.strategies.strategy import Strategy
 # -------------------------
 # Alpaca API credentials
 # -------------------------
-API_KEY = ""
-API_SECRET = ""
+load_dotenv()
+
+API_KEY = os.getenv("ALPACA_API_KEY")
+API_SECRET = os.getenv("ALPACA_API_SECRET")
 
 # -------------------------
 # CSV logging setup
@@ -113,7 +117,7 @@ class CombinedFVGTrendStrategy(Strategy):
         # Detect NEW Bullish FVG (gap up)
         if candle_2["low"] > candle_1["high"]:
             gap_size = candle_2["low"] - candle_1["high"]
-            if gap_size > 0.5:  # Minimum gap size filter
+            if gap_size > 0.2:  # Minimum gap size filter
                 fvg = {
                     "type": "bullish",
                     "low": candle_1["high"],
@@ -194,8 +198,8 @@ class CombinedFVGTrendStrategy(Strategy):
 # Backtesting
 # -------------------------
 if __name__ == "__main__":
-    start_date = datetime(2023, 1, 1)
-    end_date = datetime(2023, 4, 20)
+    start_date = datetime(2020, 1, 1)
+    end_date = datetime(2025, 4, 20)
 
     broker_creds = {
         "API_KEY": API_KEY,
@@ -209,11 +213,11 @@ if __name__ == "__main__":
         broker=broker,
         parameters={
             "symbol": "SPY",
-            "cash_at_risk": 0.5,
-            "stop_loss_pct": 0.02,
-            "max_drawdown_pct": 0.1,
-            "trend_window": 20,
-            "max_fvg_age": 10  # Track FVGs for up to 10 candles
+            "cash_at_risk": 0.8,
+            "stop_loss_pct": 0.03,
+            "max_drawdown_pct": 0.4,
+            "trend_window": 30,
+            "max_fvg_age": 20  # Track FVGs for up to 10 candles
         }
     )
 
