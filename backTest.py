@@ -8,8 +8,8 @@ from lumibot.strategies.strategy import Strategy
 # -------------------------
 # Alpaca API credentials
 # -------------------------
-API_KEY = "PKTZQ676PWSMIM1KGC2T"
-API_SECRET = "Z48aCwy4BKvRtSTyYXOdqCNqMhIYrTDp1Fper9sK"
+API_KEY = ""
+API_SECRET = ""
 
 # -------------------------
 # CSV logging setup
