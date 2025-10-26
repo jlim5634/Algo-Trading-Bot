@@ -8,8 +8,8 @@ from lumibot.strategies.strategy import Strategy
 # -------------------------
 # Alpaca API credentials
 # -------------------------
-API_KEY = "PKTZQ676PWSMIM1KGC2T"
-API_SECRET = "Z48aCwy4BKvRtSTyYXOdqCNqMhIYrTDp1Fper9sK"
+API_KEY = ""
+API_SECRET = ""
 
 # -------------------------
 # CSV logging setup
@@ -33,195 +33,165 @@ def log_trade(symbol, side, qty, price, total, profit_loss=""):
         ])
 
 # -------------------------
-# Combined Strategy Class
+# Combined Strategy Class - TRACKS FVGs ACROSS MULTIPLE CANDLES
 # -------------------------
 class CombinedFVGTrendStrategy(Strategy):
     def initialize(self, symbol="SPY", cash_at_risk=0.5, stop_loss_pct=0.02, 
-                   max_drawdown_pct=0.1, trend_window=20):
+                   max_drawdown_pct=0.1, trend_window=20, max_fvg_age=10):
         self.symbol = symbol
         self.cash_at_risk = cash_at_risk
         self.stop_loss_pct = stop_loss_pct
         self.max_drawdown_pct = max_drawdown_pct
         self.trend_window = trend_window
+        self.max_fvg_age = max_fvg_age  # Max candles to track an FVG
         
-        self.sleeptime = "1D"  # Check daily
-        self.previous_candles = []
-        self.open_fvgs = []
+        self.sleeptime = "1D"
         self.entry_price = None
+        self.max_equity = None
+        
+        # Track open FVGs
+        self.bullish_fvgs = []  # [{low, high, age}]
+        self.bearish_fvgs = []  # [{low, high, age}]
+        
+        self.last_candles = []
 
     def position_sizing(self, price):
         cash = self.get_cash()
         qty = round((cash * self.cash_at_risk) / price, 0)
-        return max(qty, 1)  # At least 1 share
+        return max(qty, 1)
 
     def on_trading_iteration(self):
-        # Fetch historical data
-        bars = self.get_historical_prices(self.symbol, 25, "day")
-        if bars is None or bars.df.empty:
+        # Get data
+        bars = self.get_historical_prices(self.symbol, self.trend_window + 10, "day")
+        
+        if bars is None or bars.df.empty or len(bars.df) < 3:
             return
         
         df = bars.df
         
-        # Build candle data
-        for i in range(len(df)):
-            candle = {
-                "high": df.iloc[i]["high"],
-                "low": df.iloc[i]["low"],
-                "close": df.iloc[i]["close"],
-                "open": df.iloc[i]["open"]
-            }
-            if len(self.previous_candles) == 0 or \
-               self.previous_candles[-1]["close"] != candle["close"]:
-                self.previous_candles.append(candle)
+        # Get last 3 candles
+        candle_1 = df.iloc[-3]
+        candle_2 = df.iloc[-2]
+        candle_3 = df.iloc[-1]
         
-        # Keep only recent candles
-        if len(self.previous_candles) > self.trend_window + 5:
-            self.previous_candles = self.previous_candles[-self.trend_window - 5:]
+        last_price = candle_3["close"]
+        position = self.get_position(self.symbol)
+        portfolio_value = self.get_portfolio_value()
         
-        if len(self.previous_candles) < 3:
+        # Initialize max equity
+        if self.max_equity is None:
+            self.max_equity = portfolio_value
+        
+        # Risk management: Max drawdown
+        if position and portfolio_value < self.max_equity * (1 - self.max_drawdown_pct):
+            print(f"[Risk] Max drawdown hit. Closing position.")
+            self.sell_all()
+            self.entry_price = None
             return
         
-        # Detect FVG
-        fvg = self.detect_fvg()
-        if fvg:
-            self.open_fvgs.append(fvg)
-        
-        # Check filled FVGs
-        last_candle = self.previous_candles[-1]
-        filled_fvgs = self.check_fvg_fill(last_candle)
-        
-        last_price = last_candle["close"]
-        position = self.get_position(self.symbol)
-        
-        # Check max drawdown
-        portfolio_value = self.get_portfolio_value()
-        if position and hasattr(self, 'max_equity'):
-            if portfolio_value < self.max_equity * (1 - self.max_drawdown_pct):
-                print(f"[Risk] Max drawdown hit. Closing position.")
-                self.sell_all()
-                return
-        
-        # Stop loss
+        # Risk management: Stop loss
         if position and self.entry_price:
             if last_price <= self.entry_price * (1 - self.stop_loss_pct):
-                print(f"[Risk] Stop loss at {last_price:.2f}")
-                self.sell_all()
-                self.entry_price = None
-                return
-        
-        # Trading logic
-        for filled in filled_fvgs:
-            if filled["type"] == "bearish" and not position and self.in_uptrend():
-                # Enter long
-                qty = self.position_sizing(last_price)
-                order = self.create_order(self.symbol, qty, "buy")
+                print(f"[Risk] Stop loss triggered at ${last_price:.2f}")
+                qty = position.quantity
+                order = self.create_order(self.symbol, qty, "sell")
                 self.submit_order(order)
-                self.entry_price = last_price
-                self.max_equity = portfolio_value
-                log_trade(self.symbol, "BUY", qty, last_price, qty * last_price)
-                print(f"[Trade] Enter LONG at {last_price:.2f}")
-                
-            elif filled["type"] == "bullish" and position:
-                # Exit long
-                self.sell_all()
-                profit_loss = (last_price - self.entry_price) * position.quantity if self.entry_price else 0
-                log_trade(self.symbol, "SELL", position.quantity, last_price, 
-                         position.quantity * last_price, profit_loss)
+                log_trade(self.symbol, "SELL", qty, last_price, 
+                         qty * last_price, 
+                         (last_price - self.entry_price) * qty)
                 self.entry_price = None
-                print(f"[Trade] Exit LONG at {last_price:.2f}")
-    
-    def detect_fvg(self):
-        if len(self.previous_candles) < 2:
-            return None
-        prev = self.previous_candles[-2]
-        curr = self.previous_candles[-1]
-        
-        if curr["low"] > prev["high"]:
-            return {"type": "bullish", "low": prev["high"], "high": curr["low"]}
-        if curr["high"] < prev["low"]:
-            return {"type": "bearish", "low": curr["high"], "high": prev["low"]}
-        return None
-    
-    def check_fvg_fill(self, candle):
-        fills = []
-        for fvg in self.open_fvgs[:]:
-            if candle["high"] >= fvg["low"] and candle["low"] <= fvg["high"]:
-                fills.append(fvg)
-                self.open_fvgs.remove(fvg)
-        return fills
-    
-    def in_uptrend(self):
-        if len(self.previous_candles) < self.trend_window:
-            return False
-        prices = [c["close"] for c in self.previous_candles[-self.trend_window:]]
-        ma = np.mean(prices)
-        return self.previous_candles[-1]["close"] > ma
-
-    def on_trading_iteration(self, price_data=None):
-        if price_data is None:
-            return
-
-        # Update prices and candles
-        self.prices.append(price_data["close"])
-        self.previous_candles.append(price_data)
-        if len(self.previous_candles) > 3:
-            self.previous_candles.pop(0)
-
-        # Detect and track FVG
-        fvg = self.detect_fvg()
-        if fvg:
-            self.open_fvgs.append(fvg)
-
-        # Check for filled FVGs
-        filled_fvgs = self.check_fvg_fill(price_data)
-        last_price = price_data["close"]
-        qty = self.position_sizing(last_price)
-
-        # Check max drawdown
-        if self.position and self.current_equity < self.max_equity * (1 - self.max_drawdown_pct):
-            print("[Risk] Max drawdown hit. Closing position.")
-            self.close_position(last_price, qty)
-            return
-
-        # Stop loss for long position
-        if self.position == "long":
-            if last_price <= self.entry_price * (1 - self.stop_loss_pct):
-                print(f"[Risk] Stop loss triggered at {last_price:.2f}. Closing position.")
-                self.close_position(last_price, qty)
                 return
-
-        # Trading logic: enter/exit on FVG fill with trend filter
-        for filled in filled_fvgs:
-            if filled["type"] == "bearish" and self.position != "long" and self.in_uptrend():
-                # Enter long
-                total_cost = qty * last_price
-                log_trade(self.symbol, "BUY", qty, last_price, total_cost)
-                self.position = "long"
-                self.entry_price = last_price
-                self.max_equity = max(self.current_equity, self.max_equity)
-                print(f"[Trade] Enter LONG on bearish FVG fill at {last_price:.2f}")
-            elif filled["type"] == "bullish" and self.position == "long":
-                # Exit long
-                proceeds = qty * last_price
-                profit_loss = proceeds - (self.entry_price * qty)
-                log_trade(self.symbol, "SELL", qty, last_price, proceeds, profit_loss)
-                self.position = None
-                self.entry_price = None
-                self.current_equity += profit_loss
-                print(f"[Trade] Exit LONG on bullish FVG fill at {last_price:.2f} | P/L: {profit_loss:.2f}")
-
-    def close_position(self, price, qty):
-        if self.position == "long":
-            proceeds = qty * price
-            profit_loss = proceeds - (self.entry_price * qty)
-            log_trade(self.symbol, "SELL", qty, price, proceeds, profit_loss)
-            self.position = None
-            self.entry_price = None
-            self.current_equity += profit_loss
-            print(f"[Trade] Position closed at {price:.2f} | P/L: {profit_loss:.2f}")
+        
+        # Check trend
+        closes = df["close"].values
+        if len(closes) < self.trend_window:
+            return
+        
+        sma = np.mean(closes[-self.trend_window:])
+        in_uptrend = last_price > sma
+        
+        # Detect NEW Bullish FVG (gap up)
+        if candle_2["low"] > candle_1["high"]:
+            gap_size = candle_2["low"] - candle_1["high"]
+            if gap_size > 0.5:  # Minimum gap size filter
+                fvg = {
+                    "type": "bullish",
+                    "low": candle_1["high"],
+                    "high": candle_2["low"],
+                    "age": 0
+                }
+                self.bullish_fvgs.append(fvg)
+                print(f"✓ NEW Bullish FVG: ${fvg['low']:.2f} - ${fvg['high']:.2f} (gap: ${gap_size:.2f})")
+        
+        # Detect NEW Bearish FVG (gap down)
+        if candle_2["high"] < candle_1["low"]:
+            gap_size = candle_1["low"] - candle_2["high"]
+            if gap_size > 0.5:  # Minimum gap size filter
+                fvg = {
+                    "type": "bearish",
+                    "low": candle_2["high"],
+                    "high": candle_1["low"],
+                    "age": 0
+                }
+                self.bearish_fvgs.append(fvg)
+                print(f"✓ NEW Bearish FVG: ${fvg['low']:.2f} - ${fvg['high']:.2f} (gap: ${gap_size:.2f})")
+        
+        # Check if current candle fills any BULLISH FVGs (for entry)
+        if not position and in_uptrend:
+            for fvg in self.bullish_fvgs[:]:
+                # Check if price came back down into the gap
+                if candle_3["low"] <= fvg["high"] and candle_3["high"] >= fvg["low"]:
+                    # FVG filled - enter long
+                    qty = self.position_sizing(last_price)
+                    order = self.create_order(self.symbol, qty, "buy")
+                    self.submit_order(order)
+                    self.entry_price = last_price
+                    self.max_equity = max(self.max_equity, portfolio_value)
+                    log_trade(self.symbol, "BUY", qty, last_price, qty * last_price)
+                    print(f"🚀 LONG ENTRY at ${last_price:.2f} - Bullish FVG filled!")
+                    print(f"   FVG: ${fvg['low']:.2f} - ${fvg['high']:.2f}")
+                    
+                    # Remove filled FVG
+                    self.bullish_fvgs.remove(fvg)
+                    return
+        
+        # Check if current candle fills any BEARISH FVGs (for exit)
+        if position:
+            for fvg in self.bearish_fvgs[:]:
+                # Check if price came back up into the gap
+                if candle_3["high"] >= fvg["low"] and candle_3["low"] <= fvg["high"]:
+                    # FVG filled - exit long
+                    qty = position.quantity
+                    order = self.create_order(self.symbol, qty, "sell")
+                    self.submit_order(order)
+                    profit_loss = (last_price - self.entry_price) * qty if self.entry_price else 0
+                    log_trade(self.symbol, "SELL", qty, last_price, qty * last_price, profit_loss)
+                    print(f"📤 LONG EXIT at ${last_price:.2f} - Bearish FVG filled!")
+                    print(f"   FVG: ${fvg['low']:.2f} - ${fvg['high']:.2f}")
+                    print(f"   P/L: ${profit_loss:.2f}")
+                    self.entry_price = None
+                    
+                    # Remove filled FVG
+                    self.bearish_fvgs.remove(fvg)
+                    return
+        
+        # Age out old FVGs and remove those that are too old
+        for fvg in self.bullish_fvgs[:]:
+            fvg["age"] += 1
+            if fvg["age"] > self.max_fvg_age:
+                self.bullish_fvgs.remove(fvg)
+        
+        for fvg in self.bearish_fvgs[:]:
+            fvg["age"] += 1
+            if fvg["age"] > self.max_fvg_age:
+                self.bearish_fvgs.remove(fvg)
+        
+        # Print status
+        if len(self.bullish_fvgs) > 0 or len(self.bearish_fvgs) > 0:
+            print(f"📊 Tracking {len(self.bullish_fvgs)} bullish FVGs, {len(self.bearish_fvgs)} bearish FVGs")
 
 # -------------------------
-# Backtesting example
+# Backtesting
 # -------------------------
 if __name__ == "__main__":
     start_date = datetime(2023, 1, 1)
@@ -242,10 +212,15 @@ if __name__ == "__main__":
             "cash_at_risk": 0.5,
             "stop_loss_pct": 0.02,
             "max_drawdown_pct": 0.1,
-            "trend_window": 20
+            "trend_window": 20,
+            "max_fvg_age": 10  # Track FVGs for up to 10 candles
         }
     )
 
+    print("\n" + "="*60)
+    print("STARTING BACKTEST - FVG TRACKING MODE")
+    print("="*60)
+    
     strategy.backtest(
         YahooDataBacktesting,
         start_date,
