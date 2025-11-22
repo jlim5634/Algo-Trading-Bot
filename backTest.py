@@ -6,6 +6,8 @@ import numpy as np
 from lumibot.brokers import Alpaca
 from lumibot.backtesting import YahooDataBacktesting
 from lumibot.strategies.strategy import Strategy
+from lumibot.traders import Trader #exectues trading strat
+
 
 # -------------------------
 # Alpaca API credentials
@@ -224,10 +226,14 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print("STARTING BACKTEST - FVG TRACKING MODE")
     print("="*60)
+
+    trader = Trader()
+    trader.add_strategy(strategy)
+    trader.run_all()
     
-    strategy.backtest(
-        YahooDataBacktesting,
-        start_date,
-        end_date,
-        parameters={"symbol": "SPY"}
-    )
+    # strategy.backtest(
+    #     YahooDataBacktesting,
+    #     start_date,
+    #     end_date,
+    #     parameters={"symbol": "SPY"}
+    # )
