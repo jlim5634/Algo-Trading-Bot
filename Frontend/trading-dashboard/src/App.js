@@ -3,31 +3,26 @@ import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Respons
 import { TrendingUp, TrendingDown, Activity, DollarSign, BarChart3, AlertTriangle, PlayCircle, PauseCircle, Wifi, WifiOff } from 'lucide-react';
 import './App.css';
 
-// App component - main dashboard
 function App() {
-  // --- Core market & UI state ---
-  const [candleData, setCandleData] = useState([]);           // last N candles for charting
-  const [currentCandle, setCurrentCandle] = useState(null);   // most recent candle
-  const [position, setPosition] = useState(null);             // current position object from backend
-  const [bullishFVGs, setBullishFVGs] = useState([]);         // list of bullish FVG zones from backend
-  const [bearishFVGs, setBearishFVGs] = useState([]);         // list of bearish FVG zones from backend
-  const [touchedFVGs, setTouchedFVGs] = useState([]);         // local list of FVGs that were touched (for UI highlight)
-  const [tradeHistory, setTradeHistory] = useState([]);       // trade history from backend
-  const [portfolioValue, setPortfolioValue] = useState(100000);// portfolio value from backend
-  const [sma, setSma] = useState(null);                       // SMA from backend
-  const [tradingEnabled, setTradingEnabled] = useState(true); // trading toggle local state
-  const [pendingSignal, setPendingSignal] = useState(null);   // entry/exit signal waiting for user confirm
-  const [connected, setConnected] = useState(false);          // websocket connection flag
-  const [wsStatus, setWsStatus] = useState('Disconnected');   // readable ws status
-  const [autoConfirm, setAutoConfirm] = useState(false);      // optional: auto-confirm entry/exit signals
+  const [candleData, setCandleData] = useState([]);
+  const [currentCandle, setCurrentCandle] = useState(null);
+  const [position, setPosition] = useState(null);
+  const [bullishFVGs, setBullishFVGs] = useState([]);
+  const [bearishFVGs, setBearishFVGs] = useState([]);
+  const [touchedFVGs, setTouchedFVGs] = useState([]);
+  const [tradeHistory, setTradeHistory] = useState([]);
+  const [portfolioValue, setPortfolioValue] = useState(100000);
+  const [sma, setSma] = useState(null);
+  const [tradingEnabled, setTradingEnabled] = useState(true);
+  const [pendingSignal, setPendingSignal] = useState(null);
+  const [connected, setConnected] = useState(false);
+  const [wsStatus, setWsStatus] = useState('Disconnected');
+  const [autoConfirm, setAutoConfirm] = useState(false);
 
-  // --- refs for ws and reconnect management ---
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
 
-  // --- helper: send a message via websocket if open ---
   const sendWebSocketMessage = (message) => {
-    // only send when socket is open
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(message));
     } else {
@@ -35,30 +30,20 @@ function App() {
     }
   };
 
-  // --- HANDLE incoming websocket messages (from backend) ---
   const handleWebSocketMessage = useCallback((data) => {
     switch (data.type) {
-      // candle updates -> update chart / run local FVG touch logic (see handleCandleUpdate)
       case 'candle_update':
         handleCandleUpdate(data.payload);
         break;
-
-      // backend authoritative FVG list -> replace local FVGs
       case 'fvg_update':
         handleFVGUpdate(data.payload);
         break;
-
-      // backend position update -> update UI
       case 'position_update':
         handlePositionUpdate(data.payload);
         break;
-
-      // trade executed -> add to trade history
       case 'trade_executed':
         handleTradeExecuted(data.payload);
         break;
-
-      // portfolio / sma / trading_status updates -> simple setters
       case 'portfolio_update':
         setPortfolioValue(data.payload.value);
         break;
@@ -68,39 +53,38 @@ function App() {
       case 'trading_status':
         setTradingEnabled(data.payload.enabled);
         break;
-
-      // backend can push entry/exit signals to UI (we show modal) 
       case 'entry_signal':
         setPendingSignal({ type: 'entry', ...data.payload });
         break;
       case 'exit_signal':
         setPendingSignal({ type: 'exit', ...data.payload });
         break;
-
-      // signal timeout from backend -> clear modal
       case 'signal_timeout':
         setPendingSignal(null);
         break;
-
+      case 'daily_rest':
+        console.log('📅 Daily resset receeived:', data.payload);
+        setCandleData([])
+        setBullishFVGs([])
+        setBearishFVGs([])
+        setTouchedFVGs([])
+        break;
       default:
         console.log('Unknown message type:', data.type);
     }
   }, []);
 
-  // --- Setup and maintain WebSocket connection ---
   const connectWebSocket = useCallback(() => {
     try {
-      const ws = new WebSocket('ws://localhost:8765'); // same endpoint as backend
+      const ws = new WebSocket('ws://localhost:8765');
       wsRef.current = ws;
 
-      // on connection open
       ws.onopen = () => {
         console.log('WebSocket Connected');
         setConnected(true);
         setWsStatus('Connected');
       };
 
-      // on message from backend, parse JSON and dispatch
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
@@ -110,13 +94,11 @@ function App() {
         }
       };
 
-      // error handling
       ws.onerror = (error) => {
         console.error('WebSocket error:', error);
         setWsStatus('Error');
       };
 
-      // closed -> attempt reconnect after delay
       ws.onclose = () => {
         console.log('WebSocket Disconnected');
         setConnected(false);
@@ -125,7 +107,7 @@ function App() {
         reconnectTimeoutRef.current = setTimeout(() => {
           console.log('Attempting to reconnect...');
           setWsStatus('Reconnecting...');
-          connectWebSocket(); // try again
+          connectWebSocket();
         }, 5000);
       };
     } catch (error) {
@@ -134,7 +116,6 @@ function App() {
     }
   }, [handleWebSocketMessage]);
 
-  // connect on mount, clean up on unmount
   useEffect(() => {
     connectWebSocket();
     return () => {
@@ -143,30 +124,21 @@ function App() {
     };
   }, [connectWebSocket]);
 
-  // --- Data handlers (basic) ---
-  // Append new candle to local chart state and keep last 30 candles
   const handleCandleUpdate = (candle) => {
-    // add candle to chart data (backend is source of truth)
     setCandleData(prevData => {
       const newData = [...prevData, candle];
       return newData.slice(-30);
     });
-    // set latest candle for UI details
     setCurrentCandle(candle);
-
-    // After we save the candle locally, run FVG-touch & invalidation checks
     detectFVGInteractions(candle);
   };
 
-  // Replace FVG lists when backend sends authoritative list
   const handleFVGUpdate = (fvgs) => {
     setBullishFVGs(fvgs.bullish || []);
     setBearishFVGs(fvgs.bearish || []);
-    // clear local touched list if zones changed (keeps UI consistent)
     setTouchedFVGs([]);
   };
 
-  // update position object
   const handlePositionUpdate = (positionData) => {
     if (positionData && positionData.quantity > 0) {
       setPosition({
@@ -178,13 +150,10 @@ function App() {
     }
   };
 
-  // add executed trade to history (keep max 20)
   const handleTradeExecuted = (trade) => {
     setTradeHistory(prevHistory => [trade, ...prevHistory].slice(0, 20));
   };
 
-  
-  // --- Candle metric helper (unchanged) ---
   const calculateCandleMetrics = (candle) => {
     if (!candle) return null;
     const bodySize = Math.abs(candle.close - candle.open);
@@ -206,58 +175,34 @@ function App() {
   };
   const metrics = calculateCandleMetrics(currentCandle);
 
-  // --- NEW: Detect wick touches / full submersion of FVGs on incoming candle ---
-  const firstCandleIndex = candleData.length > 0 ? candleData[0].index : 0;
-
-  const mapAbsoluteIndexToChartIndex = (absoluteIndex) => {
-    const relativeIndex = absoluteIndex - firstCandleIndex;
-
-    if (relativeIndex >= 0 && relativeIndex < candleData.length){
-      return relativeIndex;
-    }
-    return null;
-  }
-
   const detectFVGInteractions = (candle) => {
     if (!candle) return;
 
-    // helper: determine if a candle's wick (low) touches a bullish FVG zone
     const checkBullishTouch = (fvg, candle) => {
-      // wick touch: candle.low is within [fvg.low, fvg.high]
       return (candle.low >= fvg.low) && (candle.low <= fvg.high);
     };
-    // helper: determine if a candle fully submerges (entire range inside) an fvg
+
     const candleFullySubmergesFvg = (fvg, candle) => {
-      // full submerge: candle.high <= fvg.high AND candle.low >= fvg.low
       return (candle.high <= fvg.high) && (candle.low >= fvg.low);
     };
-    // helper: bullish orderflow check using SMA if available
+
     const isBullishOrderflow = () => {
-      if (sma === null || sma === undefined) return true; // default to bullish if unknown
+      if (sma === null || sma === undefined) return true;
       return candle.close > sma;
     };
 
-    const newTouched = [];   // accumulate new touches to highlight in UI
-  
+    const newTouched = [];
 
-    // --- Check bullish FVGs for wick-touch / full-submerge ---
     bullishFVGs.forEach((fvg) => {
       try {
-        // if the candle fully submerges the FVG -> remove it locally and tell backend (invalidate)
         if (candleFullySubmergesFvg(fvg, candle)) {
-          // remove locally
           setBullishFVGs(prev => prev.filter(x => !(x.low === fvg.low && x.high === fvg.high)));
-          // notify backend (optional helper message)
           sendWebSocketMessage({ type: 'invalidate_fvg', payload: { type: 'bullish', low: fvg.low, high: fvg.high } });
           console.log('Removed bullish FVG due to full submerge:', fvg);
         } else if (checkBullishTouch(fvg, candle)) {
-          // wick touched the FVG
           newTouched.push({ ...fvg, side: 'bullish' });
-          // notify backend optionally that a wick touched the FVG
           sendWebSocketMessage({ type: 'fvg_touch', payload: { type: 'bullish', low: fvg.low, high: fvg.high, candle } });
-          // If orderflow is bullish and tradingEnabled, highlight and optionally auto-confirm entry
           if (isBullishOrderflow() && tradingEnabled && autoConfirm) {
-            // If backend expects user confirmation, frontend auto-confirms for testing
             sendWebSocketMessage({ type: 'trade_confirmation', payload: { confirmed: true, signal_type: 'entry' } });
           }
         }
@@ -266,21 +211,17 @@ function App() {
       }
     });
 
-    // --- Check bearish FVGs for wick-touch / full-submerge (mirrored logic) ---
     bearishFVGs.forEach((fvg) => {
       try {
-        // full submerge -> remove locally + notify backend
         if (candleFullySubmergesFvg(fvg, candle)) {
           setBearishFVGs(prev => prev.filter(x => !(x.low === fvg.low && x.high === fvg.high)));
           sendWebSocketMessage({ type: 'invalidate_fvg', payload: { type: 'bearish', low: fvg.low, high: fvg.high } });
           console.log('Removed bearish FVG due to full submerge:', fvg);
         } else {
-          // bearish wick-touch is when candle.high is inside fvg
           const bearishWickTouch = (c, f) => (c.high >= f.low) && (c.high <= f.high);
           if (bearishWickTouch(candle, fvg)) {
             newTouched.push({ ...fvg, side: 'bearish' });
             sendWebSocketMessage({ type: 'fvg_touch', payload: { type: 'bearish', low: fvg.low, high: fvg.high, candle } });
-            // if orderflow bearish and trading enabled + autoConfirm -> auto-confirm exit/entry
             if (!isBullishOrderflow() && tradingEnabled && autoConfirm) {
               sendWebSocketMessage({ type: 'trade_confirmation', payload: { confirmed: true, signal_type: 'entry' } });
             }
@@ -291,10 +232,8 @@ function App() {
       }
     });
 
-    // merge newly touched FVGs into local touchedFVGs state (for highlight)
     if (newTouched.length > 0) {
       setTouchedFVGs(prev => {
-        // keep unique touched zones by low+high; newest touches first
         const combined = [...newTouched, ...prev];
         const uniq = [];
         const seen = new Set();
@@ -305,15 +244,12 @@ function App() {
             uniq.push(z);
           }
         });
-        // keep only recent handful
         return uniq.slice(0, 20);
       });
     }
   };
 
-  // --- UI handlers for user confirming/declining signals (modal) ---
   const handleConfirmTrade = (confirm) => {
-    // send confirmation to backend (backend is authoritative and will act)
     sendWebSocketMessage({
       type: 'trade_confirmation',
       payload: {
@@ -321,18 +257,47 @@ function App() {
         signal_type: pendingSignal?.type
       }
     });
-    // close pending modal locally
     setPendingSignal(null);
   };
 
-  // toggle trading on/off (sends request to backend to toggle)
   const toggleTrading = () => {
     const newStatus = !tradingEnabled;
     sendWebSocketMessage({ type: 'toggle_trading', payload: { enabled: newStatus } });
     setTradingEnabled(newStatus);
   };
 
-  // --- Custom candlestick renderer (kept from your code, minor local tweaks) ---
+  // Custom FVG rendering component that draws boxes between candle indices
+  const FVGRenderer = ({ fvgs, color, candleData }) => {
+    if (!fvgs || fvgs.length === 0 || !candleData || candleData.length === 0) return null;
+
+    return fvgs.map((fvg, idx) => {
+      // Find the actual candle positions in our chart data
+      const candle1Index = candleData.findIndex(c => c.index === fvg.candle1_index);
+      const candle3Index = candleData.findIndex(c => c.index === fvg.candle3_index);
+
+      // Only render if both candles are visible in current data
+      if (candle1Index === -1 || candle3Index === -1) return null;
+
+      const x1 = candleData[candle1Index]?.time;
+      const x2 = candleData[candle3Index]?.time;
+
+      return (
+        <ReferenceArea
+          key={`fvg-${color}-${idx}`}
+          x1={x1}
+          x2={x2}
+          y1={fvg.low}
+          y2={fvg.high}
+          fill={color}
+          fillOpacity={0.15}
+          stroke={color}
+          strokeWidth={2}
+          strokeDasharray="4 4"
+        />
+      );
+    });
+  };
+
   const CustomCandlestick = ({ data }) => {
     const chartData = data.map(candle => ({
       ...candle,
@@ -341,7 +306,6 @@ function App() {
       bodyHigh: Math.max(candle.open, candle.close),
     }));
 
-    // same CandlestickShape as before; unchanged
     const CandlestickShape = (props) => {
       const { x, y, width, height, index } = props;
       if (!chartData[index]) return null;
@@ -367,7 +331,7 @@ function App() {
       const bodyHeight = Math.max(bodyBottomY - bodyTopY, 1);
 
       const wickX = x + width / 2;
-      const candleWidth = Math.max(width * 0.6, 6);
+      const candleWidth = Math.min(width * 0.5, 8);
       const candleX = x + (width - candleWidth) / 2;
 
       return (
@@ -381,103 +345,127 @@ function App() {
 
     return (
       <div className="relative h-96 bg-gray-900 rounded-lg p-4">
-          <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
-                  <XAxis 
-                      dataKey="index" // Use 'index' as the dataKey for proper ReferenceArea alignment
-                      stroke="#9CA3AF" 
-                      tick={{ fill: '#9CA3AF', fontSize: 11 }} 
-                      interval="preserveStartEnd" 
-                      // Use a formatter to show the readable time instead of the number index
-                      tickFormatter={(index) => {
-                          const candle = candleData.find(c => c.index === index);
-                          return candle ? candle.time : '';
-                      }}
-                  />
-                  <YAxis domain={['dataMin - 2', 'dataMax + 2']} stroke="#9CA3AF" tick={{ fill: '#9CA3AF', fontSize: 11 }} />
-                  
-                  {/* Custom Tooltip remains here */}
-                  <Tooltip content={({ active, payload }) => {
-                      if (active && payload && payload.length) {
-                          const data = payload[0].payload;
-                          const isGreen = data.close >= data.open;
-                          const change = data.close - data.open;
-                          const changePercent = (change / data.open) * 100;
-                          const bodySize = Math.abs(data.close - data.open);
-                          const upperWick = data.high - Math.max(data.open, data.close);
-                          const lowerWick = Math.min(data.open, data.close) - data.low;
-                          return (
-                              <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 shadow-xl">
-                                  <p className="text-gray-300 text-sm font-bold mb-2">{data.time}</p>
-                                  <div className="space-y-1">
-                                      <p className="text-gray-400 text-xs">Open: <span className="text-white font-semibold">${data.open?.toFixed(2)}</span></p>
-                                      <p className="text-gray-400 text-xs">High: <span className="text-green-400 font-semibold">${data.high?.toFixed(2)}</span></p>
-                                      <p className="text-gray-400 text-xs">Low: <span className="text-red-400 font-semibold">${data.low?.toFixed(2)}</span></p>
-                                      <p className="text-gray-400 text-xs">Close: <span className={`font-semibold ${isGreen ? 'text-green-400' : 'text-red-400'}`}>${data.close?.toFixed(2)}</span></p>
-                                      <div className="border-t border-gray-600 pt-1 mt-1">
-                                          <p className="text-gray-400 text-xs">
-                                              Change: <span className={`font-bold ${isGreen ? 'text-green-400' : 'text-red-400'}`}>{isGreen ? '+' : ''}{change.toFixed(2)} ({changePercent >= 0 ? '+' : ''}{changePercent.toFixed(2)}%)</span>
-                                          </p>
-                                          <p className="text-gray-400 text-xs">Body: ${bodySize.toFixed(2)}</p>
-                                          <p className="text-gray-400 text-xs">Upper Wick: ${upperWick.toFixed(2)}</p>
-                                          <p className="text-gray-400 text-xs">Lower Wick: ${lowerWick.toFixed(2)}</p>
-                                      </div>
-                                  </div>
-                              </div>
-                          );
-                      }
-                      return null;
-                  }} />
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
+            <XAxis dataKey="time" stroke="#9CA3AF" tick={{ fill: '#9CA3AF', fontSize: 11 }} interval="preserveStartEnd" />
+            <YAxis domain={['dataMin - 2', 'dataMax + 2']} stroke="#9CA3AF" tick={{ fill: '#9CA3AF', fontSize: 11 }} />
+            <Tooltip content={({ active, payload }) => {
+              if (active && payload && payload.length) {
+                const data = payload[0].payload;
+                const isGreen = data.close >= data.open;
+                const change = data.close - data.open;
+                const changePercent = (change / data.open) * 100;
+                const bodySize = Math.abs(data.close - data.open);
+                const upperWick = data.high - Math.max(data.open, data.close);
+                const lowerWick = Math.min(data.open, data.close) - data.low;
+                return (
+                  <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 shadow-xl">
+                    <p className="text-gray-300 text-sm font-bold mb-2">{data.time}</p>
+                    <div className="space-y-1">
+                      <p className="text-gray-400 text-xs">Open: <span className="text-white font-semibold">${data.open?.toFixed(2)}</span></p>
+                      <p className="text-gray-400 text-xs">High: <span className="text-green-400 font-semibold">${data.high?.toFixed(2)}</span></p>
+                      <p className="text-gray-400 text-xs">Low: <span className="text-red-400 font-semibold">${data.low?.toFixed(2)}</span></p>
+                      <p className="text-gray-400 text-xs">Close: <span className={`font-semibold ${isGreen ? 'text-green-400' : 'text-red-400'}`}>${data.close?.toFixed(2)}</span></p>
+                      <div className="border-t border-gray-600 pt-1 mt-1">
+                        <p className="text-gray-400 text-xs">
+                          Change: <span className={`font-bold ${isGreen ? 'text-green-400' : 'text-red-400'}`}>{isGreen ? '+' : ''}{change.toFixed(2)} ({changePercent >= 0 ? '+' : ''}{changePercent.toFixed(2)}%)</span>
+                        </p>
+                        <p className="text-gray-400 text-xs">Body: ${bodySize.toFixed(2)}</p>
+                        <p className="text-gray-400 text-xs">Upper Wick: ${upperWick.toFixed(2)}</p>
+                        <p className="text-gray-400 text-xs">Lower Wick: ${lowerWick.toFixed(2)}</p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              return null;
+            }} />
 
-            {/* draw SMA if present */}
             {sma && (
               <ReferenceLine y={sma} stroke="#F59E0B" strokeWidth={2} strokeDasharray="5 5" label={{ value: `SMA: $${sma.toFixed(2)}`, fill: '#F59E0B', fontSize: 11 }} />
             )}
 
-            {/* draw bullish FVGs (backend authoritative) */}
-            {bullishFVGs.map((fvg, index) => {
-                const startIdx = mapAbsoluteIndexToChartIndex(fvg.candle1_index);
-                const endIdx = mapAbsoluteIndexToChartIndex(fvg.candle3_index);
-                
-                if (startIdx !== null && endIdx !== null) {
-                    return (
-                        <ReferenceArea
-                            key={`b-fvg-${index}`}
-                            x1={startIdx} // X-axis start (relative index of Candle 1)
-                            x2={endIdx}   // X-axis end (relative index of Candle 3)
-                            y1={fvg.low}  // Y-axis lower price (Candle 1 High)
-                            y2={fvg.high} // Y-axis upper price (Candle 3 Low)
-                            fill="#4caf50" // Green
-                            fillOpacity={0.15}
-                            stroke="#4caf50"
-                            strokeOpacity={0.7}
-                        />
-                    );
-                }
-                return null;
+            {bullishFVGs.map((fvg, idx) => {
+              const candle1 = chartData.find(c => c.index === fvg.candle1_index);
+              const candle3 = chartData.find(c => c.index === fvg.candle3_index);
+              
+              if (!candle1 || !candle3) return null;
+
+              return (
+                <ReferenceArea
+                  key={`bullish-fvg-${idx}`}
+                  x1={candle1.time}
+                  x2={candle3.time}
+                  y1={fvg.low}
+                  y2={fvg.high}
+                  fill="#10B981"
+                  fillOpacity={0.2}
+                  stroke="#10B981"
+                  strokeWidth={2}
+                  strokeDasharray="4 4"
+                  label={{
+                    value: `FVG ${fvg.candle1_index}-${fvg.candle3_index}`,
+                    position: 'insideTopLeft',
+                    fill: '#10B981',
+                    fontSize: 10
+                  }}
+                />
+              );
             })}
 
-            {/* draw bearish FVGs */}
-            {bearishFVGs.map((fvg, idx) => (
-              <ReferenceArea key={`bear-${idx}`} y1={fvg.low} y2={fvg.high} fill="#EF4444" fillOpacity={0.12} stroke="#EF4444" strokeWidth={1.5} strokeDasharray="4 4" />
-            ))}
+            {bearishFVGs.map((fvg, idx) => {
+              const candle1 = chartData.find(c => c.index === fvg.candle1_index);
+              const candle3 = chartData.find(c => c.index === fvg.candle3_index);
+              
+              if (!candle1 || !candle3) return null;
 
-            {/* visually highlight touched FVGs (local detection) */}
-            {touchedFVGs.map((fvg, idx) => (
-              <ReferenceArea
-                key={`touched-${idx}`}
-                y1={fvg.low}
-                y2={fvg.high}
-                stroke={fvg.side === 'bullish' ? '#34D399' : '#F87171'}
-                strokeWidth={2}
-                strokeDasharray="2 2"
-                fill={fvg.side === 'bullish' ? '#34D399' : '#F87171'}
-                fillOpacity={0.06}
-              />
-            ))}
+              return (
+                <ReferenceArea
+                  key={`bearish-fvg-${idx}`}
+                  x1={candle1.time}
+                  x2={candle3.time}
+                  y1={fvg.low}
+                  y2={fvg.high}
+                  fill="#EF4444"
+                  fillOpacity={0.2}
+                  stroke="#EF4444"
+                  strokeWidth={2}
+                  strokeDasharray="4 4"
+                  label={{
+                    value: `FVG ${fvg.candle1_index}-${fvg.candle3_index}`,
+                    position: 'insideTopLeft',
+                    fill: '#EF4444',
+                    fontSize: 10
+                  }}
+                />
+              );
+            })} 
 
-            {/* position entry and stop visuals */}
+
+            {/* Highlight touched FVGs */}
+            {touchedFVGs.map((fvg, idx) => {
+              const candle1Index = candleData.findIndex(c => c.index === fvg.candle1_index);
+              const candle3Index = candleData.findIndex(c => c.index === fvg.candle3_index);
+              
+              if (candle1Index === -1 || candle3Index === -1) return null;
+
+              return (
+                <ReferenceArea
+                  key={`touched-${idx}`}
+                  x1={candleData[candle1Index]?.time}
+                  x2={candleData[candle3Index]?.time}
+                  y1={fvg.low}
+                  y2={fvg.high}
+                  stroke={fvg.side === 'bullish' ? '#34D399' : '#F87171'}
+                  strokeWidth={3}
+                  strokeDasharray="2 2"
+                  fill={fvg.side === 'bullish' ? '#34D399' : '#F87171'}
+                  fillOpacity={0.08}
+                />
+              );
+            })}
+
             {position && (
               <ReferenceLine y={position.entryPrice} stroke="#8B5CF6" strokeWidth={2} strokeDasharray="8 4" label={{ value: `Entry: $${position.entryPrice.toFixed(2)}`, fill: '#8B5CF6', fontSize: 11 }} />
             )}
@@ -485,25 +473,22 @@ function App() {
               <ReferenceLine y={position.entryPrice * 0.98} stroke="#DC2626" strokeWidth={2} strokeDasharray="4 4" label={{ value: `Stop: $${(position.entryPrice * 0.98).toFixed(2)}`, fill: '#DC2626', fontSize: 10 }} />
             )}
 
-            {/* invisible high & low lines used for scale but not drawn */}
             <Line type="monotone" dataKey="high" stroke="transparent" dot={false} isAnimationActive={false} />
             <Line type="monotone" dataKey="low" stroke="transparent" dot={false} isAnimationActive={false} />
 
-            {/* draw custom candlesticks */}
             <Bar dataKey="bodyLow" fill="transparent" shape={CandlestickShape} isAnimationActive={false} />
           </ComposedChart>
         </ResponsiveContainer>
 
-        {/* legend */}
         <div className="absolute top-6 left-6 bg-gray-800 bg-opacity-95 rounded-lg px-3 py-2 text-xs shadow-lg border border-gray-700">
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               <div className="w-4 h-3 bg-green-500 rounded border border-green-600"></div>
-              <span className="text-gray-300 font-semibold">Bullish</span>
+              <span className="text-gray-300 font-semibold">Bullish FVG</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-4 h-3 bg-red-500 rounded border border-red-600"></div>
-              <span className="text-gray-300 font-semibold">Bearish</span>
+              <span className="text-gray-300 font-semibold">Bearish FVG</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="w-1 h-4 bg-gray-400"></div>
@@ -515,35 +500,30 @@ function App() {
     );
   };
 
-  // --- MAIN JSX returned by App ---
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
-        {/* Header with connection & trading toggle */}
         <div className="flex justify-between items-center">
           <div>
             <h1 className="text-3xl font-bold text-white flex items-center gap-3">
               <BarChart3 className="text-blue-500" size={36} />
               FVG Trading Dashboard
             </h1>
-            <p className="text-gray-400 mt-1">Real-time Fair Value Gap Strategy Monitor</p>
+            <p className="text-gray-400 mt-1">Real-time Fair Value Gap Strategy Monitor - Live Data</p>
           </div>
 
-          {/* connection & control area */}
           <div className="flex items-center gap-4">
             <div className={`flex items-center gap-2 px-4 py-2 rounded-lg ${connected ? 'bg-green-900 bg-opacity-30' : 'bg-red-900 bg-opacity-30'}`}>
               {connected ? <Wifi className="text-green-500" size={20} /> : <WifiOff className="text-red-500" size={20} />}
               <span className={`text-sm font-semibold ${connected ? 'text-green-400' : 'text-red-400'}`}>{wsStatus}</span>
             </div>
 
-            {/* trading on/off + auto confirm toggle for testing */}
             <div className="flex items-center gap-2">
               <button onClick={toggleTrading} disabled={!connected} className={`flex items-center gap-2 px-6 py-3 rounded-lg font-semibold transition-all ${!connected ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : tradingEnabled ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'}`}>
                 {tradingEnabled ? <PlayCircle size={20} /> : <PauseCircle size={20} />}
                 {tradingEnabled ? 'Trading Active' : 'Trading Paused'}
               </button>
 
-              {/* autoConfirm toggle - only for dev/testing - default false */}
               <label className="flex items-center gap-2 text-sm text-gray-300">
                 <input type="checkbox" checked={autoConfirm} onChange={(e) => setAutoConfirm(e.target.checked)} />
                 <span>Auto-confirm</span>
@@ -552,7 +532,6 @@ function App() {
           </div>
         </div>
 
-        {/* connection warning when disconnected */}
         {!connected && (
           <div className="bg-yellow-900 bg-opacity-30 border border-yellow-600 rounded-lg p-4">
             <div className="flex items-center gap-3">
@@ -565,7 +544,6 @@ function App() {
           </div>
         )}
 
-        {/* Dashboard summary cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div className="flex items-center justify-between">
@@ -610,13 +588,11 @@ function App() {
           </div>
         </div>
 
-        {/* Chart */}
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-6">
-          <h2 className="text-xl font-bold text-white mb-4">SPY - 15 Minute Chart</h2>
-          {candleData.length > 0 ? <CustomCandlestick data={candleData} /> : <div className="h-96 flex items-center justify-center text-gray-500"><p>Waiting for market data...</p></div>}
+          <h2 className="text-xl font-bold text-white mb-4">SPY - 15 Minute Chart (Live Data)</h2>
+          {candleData.length > 0 ? <CustomCandlestick data={candleData} /> : <div className="h-96 flex items-center justify-center text-gray-500"><p>Waiting for live market data...</p></div>}
         </div>
 
-        {/* current candle analysis */}
         {metrics && currentCandle && (
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-6">
             <h2 className="text-xl font-bold text-white mb-4">📊 Current Candle Analysis</h2>
@@ -653,7 +629,6 @@ function App() {
           </div>
         )}
 
-        {/* active position view */}
         {position && currentCandle && (
           <div className="bg-gray-900 border border-yellow-600 rounded-lg p-6">
             <div className="flex items-start gap-3">
@@ -671,7 +646,6 @@ function App() {
           </div>
         )}
 
-        {/* trade history table */}
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-6">
           <h2 className="text-xl font-bold text-white mb-4">Trade History</h2>
           {tradeHistory.length > 0 ? (
@@ -706,7 +680,6 @@ function App() {
           ) : (<p className="text-gray-500 text-center py-8">No trades yet</p>)}
         </div>
 
-        {/* Pending signal modal (backend -> frontend) */}
         {pendingSignal && (
           <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
             <div className="bg-gray-900 border-2 border-blue-500 rounded-lg p-8 max-w-md w-full mx-4 shadow-2xl">
@@ -732,4 +705,4 @@ function App() {
   );
 }
 
-export default App;
+export default App
