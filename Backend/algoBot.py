@@ -1,10 +1,10 @@
 # trading_with_fvg.py
-# Fixed version - removed test data, added FVG candle position tracking
+# Fixed: Daily reset, proper candle indexing, and data structure
 
 import csv
 import os
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, time as dt_time
 import numpy as np
 from lumibot.brokers import Alpaca
 from lumibot.strategies.strategy import Strategy
@@ -146,14 +146,54 @@ class CombinedFVGTrendStrategy(Strategy):
         self.entry_price = None
         self.max_equity = None
         
-        # Updated FVG structure to include candle indices
         self.bullish_fvgs = []
         self.bearish_fvgs = []
         
-        # Track candle counter for proper indexing
+        # Track current trading day and candle counter
+        self.current_trading_day = None
         self.candle_counter = 0
+        self.session_start_time = None
 
-        print("✅ Strategy initialized with WebSocket support")
+        print("✅ Strategy initialized with daily reset capability")
+
+    def get_market_open_time(self):
+        """Get today's market open time (9:30 AM ET)"""
+        now = datetime.now()
+        return now.replace(hour=9, minute=30, second=0, microsecond=0)
+
+    def should_reset_daily_data(self):
+        """Check if we need to reset data for a new trading day"""
+        now = datetime.now()
+        today = now.date()
+        
+        # Check if it's a new trading day
+        if self.current_trading_day != today:
+            # Only reset if market is open (after 9:30 AM)
+            market_open = self.get_market_open_time()
+            if now >= market_open:
+                return True
+        return False
+
+    def reset_daily_data(self):
+        """Reset all daily data for new trading day"""
+        now = datetime.now()
+        self.current_trading_day = now.date()
+        self.candle_counter = 0
+        self.bullish_fvgs = []
+        self.bearish_fvgs = []
+        self.session_start_time = self.get_market_open_time()
+        
+        print(f"\n{'='*60}")
+        print(f"🔄 NEW TRADING DAY: {self.current_trading_day}")
+        print(f"📅 Session start: {self.session_start_time.strftime('%H:%M:%S')}")
+        print(f"{'='*60}\n")
+        
+        # Broadcast reset to frontend
+        if self.ws_server:
+            self.ws_server.broadcast('daily_reset', {
+                'date': str(self.current_trading_day),
+                'session_start': self.session_start_time.strftime('%Y-%m-%d %H:%M:%S')
+            })
 
     def calculate_candle_metrics(self, candle):
         open_price = candle["open"]
@@ -186,7 +226,7 @@ class CombinedFVGTrendStrategy(Strategy):
     def print_candle_analysis(self, candle, label="Candle"):
         metrics = self.calculate_candle_metrics(candle)
         print(f"\n{'='*60}")
-        print(f"📊 {label} Analysis")
+        print(f"📊 {label} Analysis (Candle #{self.candle_counter})")
         print(f"{'='*60}")
         print(f"   Open:  ${metrics['open']:.2f}")
         print(f"   High:  ${metrics['high']:.2f}")
@@ -223,6 +263,10 @@ class CombinedFVGTrendStrategy(Strategy):
         return False
 
     def on_trading_iteration(self):
+        # Check if we need to reset for a new day
+        if self.should_reset_daily_data():
+            self.reset_daily_data()
+
         if self.ws_server:
             msg = self.ws_server.get_message(timeout=0)
             if msg and msg['type'] == 'toggle_trading':
@@ -241,13 +285,14 @@ class CombinedFVGTrendStrategy(Strategy):
         candle_2 = df.iloc[-2]
         candle_3 = df.iloc[-1]
 
-        # Increment candle counter
+        # Increment candle counter for today
         self.candle_counter += 1
 
         self.print_candle_analysis(candle_3, "Current Candle")
 
-        # Get timestamp for the current candle
-        current_time = datetime.now().strftime('%H:%M:%S')
+        # Get actual timestamp from the candle data
+        candle_timestamp = df.index[-1]
+        current_time = candle_timestamp.strftime('%H:%M')
         
         if self.ws_server:
             self.ws_server.broadcast('candle_update', {
@@ -256,7 +301,8 @@ class CombinedFVGTrendStrategy(Strategy):
                 'high': float(candle_3['high']),
                 'low': float(candle_3['low']),
                 'close': float(candle_3['close']),
-                'index': self.candle_counter  # Add index for frontend
+                'index': self.candle_counter,
+                'timestamp': candle_timestamp.isoformat()
             })
 
         last_price = candle_3["close"]
@@ -322,7 +368,7 @@ class CombinedFVGTrendStrategy(Strategy):
         if self.ws_server:
             self.ws_server.broadcast('sma_update', {'value': float(sma)})
 
-        # FVG DETECTION with candle indices
+        # FVG DETECTION with proper candle indices
         try:
             c1_high = float(candle_1['high'])
             c1_low = float(candle_1['low'])
@@ -341,13 +387,13 @@ class CombinedFVGTrendStrategy(Strategy):
                     "low": float(c1_high),
                     "high": float(c3_low),
                     "age": 0,
-                    "candle1_index": self.candle_counter - 2,  # Index of candle 1
-                    "candle3_index": self.candle_counter  # Index of candle 3 (current)
+                    "candle1_index": self.candle_counter - 2,
+                    "candle3_index": self.candle_counter
                 }
                 exists = any(abs(existing['low'] - fvg['low']) < 1e-9 and abs(existing['high'] - fvg['high']) < 1e-9 for existing in self.bullish_fvgs)
                 if not exists:
                     self.bullish_fvgs.append(fvg)
-                    print(f"\n✓ DETECTED Bullish FVG: ${fvg['low']:.2f} - ${fvg['high']:.2f} (Candle {fvg['candle1_index']} to {fvg['candle3_index']})")
+                    print(f"\n✓ DETECTED Bullish FVG: ${fvg['low']:.2f} - ${fvg['high']:.2f} (Candles {fvg['candle1_index']} to {fvg['candle3_index']})")
 
         # Bearish FVG: Candle1.low > Candle3.high
         if c1_low is not None and c3_high is not None and (c1_low > c3_high):
@@ -364,9 +410,9 @@ class CombinedFVGTrendStrategy(Strategy):
                 exists = any(abs(existing['low'] - fvg['low']) < 1e-9 and abs(existing['high'] - fvg['high']) < 1e-9 for existing in self.bearish_fvgs)
                 if not exists:
                     self.bearish_fvgs.append(fvg)
-                    print(f"\n✓ DETECTED Bearish FVG: ${fvg['low']:.2f} - ${fvg['high']:.2f} (Candle {fvg['candle1_index']} to {fvg['candle3_index']})")
+                    print(f"\n✓ DETECTED Bearish FVG: ${fvg['low']:.2f} - ${fvg['high']:.2f} (Candles {fvg['candle1_index']} to {fvg['candle3_index']})")
 
-        # Broadcast FVGs with candle indices
+        # Broadcast FVGs
         if self.ws_server:
             self.ws_server.broadcast('fvg_update', {
                 'bullish': [{
@@ -385,7 +431,7 @@ class CombinedFVGTrendStrategy(Strategy):
                 } for f in self.bearish_fvgs]
             })
 
-        # FVG INVALIDATION (full submersion check)
+        # FVG INVALIDATION
         def candle_fully_submerges_fvg(candle, fvg):
             try:
                 h = float(candle['high'])
@@ -404,7 +450,7 @@ class CombinedFVGTrendStrategy(Strategy):
                 print(f"\n⚠️  Bearish FVG fully submerged and removed: ${f['low']:.2f} - ${f['high']:.2f}")
                 self.bearish_fvgs.remove(f)
 
-        # ENTRY LOGIC (rest of the code remains the same)
+        # ENTRY LOGIC
         def try_enter_long_on_fvg(fvg):
             if self.get_position(self.symbol):
                 return False
@@ -442,57 +488,12 @@ class CombinedFVGTrendStrategy(Strategy):
                 return True
             return False
 
-        def try_enter_short_on_fvg(fvg):
-            if self.get_position(self.symbol):
-                return False
-            try:
-                c_high = float(candle_3['high'])
-            except:
-                return False
-            if (c_high >= fvg['low']) and (c_high <= fvg['high']):
-                if in_uptrend:
-                    return False
-                qty = self.position_sizing(last_price)
-                print(f"\n🎯 Bearish Wick Entry detected into FVG {fvg['low']:.2f}-{fvg['high']:.2f}")
-                confirmed = True
-                if self.require_entry_confirmation:
-                    confirmed = self.get_web_confirmation('entry', symbol=self.symbol, price=float(last_price), quantity=int(qty))
-                if not confirmed:
-                    print("❌ Entry declined by web")
-                    return False
-                order = self.create_order(self.symbol, qty, "sell")
-                self.submit_order(order)
-                self.entry_price = last_price
-                self.max_equity = max(self.max_equity, portfolio_value)
-                log_trade(self.symbol, "SELL", qty, last_price, qty * last_price)
-                if self.ws_server:
-                    self.ws_server.broadcast('trade_executed', {
-                        'datetime': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        'symbol': self.symbol,
-                        'side': 'SELL',
-                        'quantity': int(qty),
-                        'price': float(last_price),
-                        'total': float(qty * last_price),
-                        'pl': ''
-                    })
-                print(f"\n✅ SHORT ENTRY at ${last_price:.2f}")
-                return True
-            return False
-
         if not self.get_position(self.symbol) and in_uptrend:
             for fvg in self.bullish_fvgs[:]:
                 entered = try_enter_long_on_fvg(fvg)
                 if entered:
                     if fvg in self.bullish_fvgs:
                         self.bullish_fvgs.remove(fvg)
-                    return
-
-        if not self.get_position(self.symbol) and (not in_uptrend):
-            for fvg in self.bearish_fvgs[:]:
-                entered = try_enter_short_on_fvg(fvg)
-                if entered:
-                    if fvg in self.bearish_fvgs:
-                        self.bearish_fvgs.remove(fvg)
                     return
 
         # EXIT LOGIC
@@ -547,11 +548,6 @@ if __name__ == "__main__":
     ws_server.run_in_thread()
     time.sleep(3)
 
-    # TEST DATA GENERATOR COMMENTED OUT - Using live data now
-    # test_thread = threading.Thread(target=send_test_data, args=(ws_server,), daemon=True)
-    # test_thread.start()
-    # print("🧪 Test data sender started")
-
     broker_creds = {
         "API_KEY": API_KEY,
         "API_SECRET": API_SECRET,
@@ -578,11 +574,11 @@ if __name__ == "__main__":
     )
 
     print("\n" + "="*60)
-    print("🚀 LIVE TRADING WITH WEB DASHBOARD")
+    print("🚀 LIVE TRADING WITH DAILY RESET")
     print("="*60)
     print("📊 Open dashboard at: http://localhost:3000")
     print("🔌 WebSocket: ws://localhost:8765")
-    print("🎯 Using LIVE market data (no test candles)")
+    print("🔄 Data resets daily at market open (9:30 AM ET)")
     print("="*60)
     print("\nPress Ctrl+C to stop\n")
 
